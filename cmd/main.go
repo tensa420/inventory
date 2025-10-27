@@ -2,109 +2,28 @@ package main
 
 import (
 	"context"
-	in "inventory/pkg/pb"
 	"log"
 	"net"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
+	"github.com/joho/godotenv"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
-	"google.golang.org/grpc/status"
+
+	"inventory/internal/api"
+	"inventory/internal/repository/repository"
+	"inventory/internal/usecase"
+	in "inventory/pkg/pb"
 )
 
-type InventoryServer struct {
-	in.UnimplementedInventoryServiceServer
-	mu      sync.Mutex
-	details map[string]*in.Part
-}
-
-func (p *InventoryServer) GetPart(_ context.Context, req *in.GetPartRequest) (*in.GetPartResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	id := req.Uuid
-
-	part, ok := p.details[id]
-	if !ok {
-		return nil, status.Error(codes.NotFound, "ID not found")
-	}
-
-	return &in.GetPartResponse{
-		Part: part,
-	}, nil
-}
-
-func (p *InventoryServer) ListParts(_ context.Context, req *in.ListPartsRequest) (*in.ListPartsResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	parts := make([]*in.Part, 0)
-
-	uuids := req.Filter.Uuids
-	names := req.Filter.Names
-	categories := req.Filter.Categories
-	manufacturers := req.Filter.ManufacturerCountries
-	tags := req.Filter.Tags
-
-	if len(uuids) > 0 {
-		for _, v := range p.details {
-			for uid := 0; uid < len(uuids); uid++ {
-				if v.UUID == uuids[uid] {
-					parts = append(parts, v)
-				}
-			}
-		}
-	}
-	if len(names) > 0 {
-		for _, v := range p.details {
-			for name := 0; name < len(names); name++ {
-				if v.Name == names[name] {
-					parts = append(parts, v)
-				}
-			}
-		}
-	}
-	if len(categories) > 0 {
-		for _, v := range p.details {
-			for cat := 0; cat < len(categories); cat++ {
-				if v.Category == categories[cat] {
-					parts = append(parts, v)
-				}
-			}
-		}
-	}
-	if len(manufacturers) > 0 {
-		for _, v := range p.details {
-			for countr := 0; countr < len(manufacturers); countr++ {
-				if v.Manufacturer.Country == manufacturers[countr] {
-					parts = append(parts, v)
-				}
-			}
-		}
-	}
-	if len(tags) > 0 {
-		for _, v := range p.details {
-			for tagsInStruct := 0; tagsInStruct < len(v.Tags); tagsInStruct++ {
-				for tag := 0; tag < len(tags); tag++ {
-					if v.Tags[tagsInStruct] == tags[tag] {
-						parts = append(parts, v)
-					}
-				}
-			}
-		}
-	}
-
-	return &in.ListPartsResponse{
-		Parts: parts,
-	}, nil
-}
 func main() {
+	ctx := context.Background()
 
-	lis, err := net.Listen("TCP", ":50052")
+	lis, err := net.Listen("tcp", ":50062")
 	if err != nil {
 		log.Printf("Failed to listen: %v", err)
 	}
@@ -114,8 +33,30 @@ func main() {
 			log.Printf("Failed to close listener: %v", err)
 		}
 	}()
+
+	_ = godotenv.Load(".env")
+
+	dbURI := os.Getenv("MONGO_URI")
+
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(dbURI))
+	if err != nil {
+		log.Printf("failed to connect to database: %v\n", err)
+		return
+	}
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		log.Printf("failed to ping database: %v\n", err)
+		return
+	}
+
+	db := client.Database("inventory")
+
+	inventoryRepo := repository.NewInventoryRepository(db)
+	inventoryUsecase := usecase.NewInventoryUsecase(inventoryRepo)
+	inventoryServer := api.NewInventoryServer(inventoryUsecase)
+
 	s := grpc.NewServer()
-	in.RegisterInventoryServiceServer(s, &InventoryServer{})
+	in.RegisterInventoryServiceServer(s, inventoryServer)
 
 	reflection.Register(s)
 
