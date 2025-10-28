@@ -25,10 +25,29 @@ services:
     restart: unless-stopped # Автоматический перезапуск контейнера, кроме ручной остановки
     networks:
       - app-network
+  inventoryserv:
+      build:
+        context: .
+        dockerfile: Dockerfile
+      container_name: inventoryService
+      ports:
+        - "50062:50062"
+      depends_on:
+        mongodb:
+          condition: service_healthy
+      restart: unless-stopped
+      networks:
+        - app-network
+      env_file:
+        - ./.env
+      environment:
+        - DB_URI=${MONGO_URI}
+
 
 networks:
   app-network:
-    driver: bridge # Обычная bridge-сеть Docker
+    external: true
+    name: app-network
 
 volumes:
   mongodata: # Volume для данных базы, Docker создаст его автоматически
